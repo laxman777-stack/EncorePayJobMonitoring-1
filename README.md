@@ -187,7 +187,7 @@ The notifier always tries the OAuth path first and, on any failure, logs the err
 
 **Where to look**
 
-1. **Run page annotations.** The workflow runs a `Verify Google Chat OAuth` step before the monitoring starts. It checks the four Google Chat secrets and performs a real token refresh, emitting an `::error::`/`::warning::` annotation that names the exact cause.
+1. **Run page annotations.** The `Verify Google Chat OAuth` step (drop-in snippet in `docs/verify-google-chat-oauth-step.yml`; add it right after `Verify configuration`) checks the four Google Chat secrets and performs a real token refresh, emitting an `::error::`/`::warning::` annotation that names the exact cause.
 2. **Monitoring step log.** The line `[ERROR] Google Chat OAuth notification failed: ...` and the `Google Chat report attachment failed` annotation that the notifier emits alongside it, both carrying the underlying HTTP status.
 
 **Error → cause → fix**

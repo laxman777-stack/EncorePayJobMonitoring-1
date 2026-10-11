@@ -1,0 +1,58 @@
+# Drop-in step for .github/workflows/job-monitoring.yml
+#
+# Paste the step below into the `monitor` job, immediately after the existing
+# "Verify configuration" step and before "Run job monitoring". It uses the
+# GOOGLE_CHAT_OAUTH_* values already exported in the job-level `env:` block, so
+# it needs no extra wiring.
+#
+# Why it exists: GoogleChatApiNotifier always tries the OAuth attachment path
+# first and, on any failure, silently falls back to a text-only incoming-webhook
+# message. A missing HTML report therefore never says why. This step performs the
+# same refresh-token exchange before the suite runs and turns the result into a
+# run-page annotation that names the cause and the fix.
+#
+# (Kept here instead of in .github/workflows/ only because the tooling used to
+# write this file is not permitted to update workflow files.)
+
+      - name: Verify Google Chat OAuth
+        # Small pre-flight: prove the OAuth trio can mint an access token before the
+        # suite runs. The notifier silently falls back to a text-only webhook message
+        # on any OAuth failure, so this step surfaces the real cause as an annotation.
+        run: |
+          set -u
+
+          if [ -z "${GOOGLE_CHAT_OAUTH_CLIENT_ID:-}" ] || [ -z "${GOOGLE_CHAT_OAUTH_CLIENT_SECRET:-}" ] || [ -z "${GOOGLE_CHAT_OAUTH_REFRESH_TOKEN:-}" ]; then
+            echo "::warning::Google Chat OAuth is not fully configured - the HTML report cannot be attached (incoming webhooks carry text only). Set GOOGLE_CHAT_OAUTH_CLIENT_ID, GOOGLE_CHAT_OAUTH_CLIENT_SECRET and GOOGLE_CHAT_OAUTH_REFRESH_TOKEN."
+            exit 0
+          fi
+
+          response="$(curl -sS -w '\n%{http_code}' https://oauth2.googleapis.com/token \
+            --data-urlencode "client_id=${GOOGLE_CHAT_OAUTH_CLIENT_ID}" \
+            --data-urlencode "client_secret=${GOOGLE_CHAT_OAUTH_CLIENT_SECRET}" \
+            --data-urlencode "refresh_token=${GOOGLE_CHAT_OAUTH_REFRESH_TOKEN}" \
+            --data-urlencode "grant_type=refresh_token" || true)"
+          http_code="$(printf '%s' "$response" | tail -n1)"
+          body="$(printf '%s' "$response" | sed '$d')"
+
+          if [ "$http_code" != "200" ]; then
+            error="$(printf '%s' "$body" | sed -n 's/.*"error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+            case "$error" in
+              invalid_grant)
+                hint="The refresh token is expired or revoked. Google expires refresh tokens 7 days after creation while the OAuth app is in Testing mode, or the token belongs to a different OAuth client - re-authorize with your own client to get a fresh one." ;;
+              invalid_client)
+                hint="The OAuth client ID or secret is rejected. Check GOOGLE_CHAT_OAUTH_CLIENT_ID and GOOGLE_CHAT_OAUTH_CLIENT_SECRET." ;;
+              *)
+                hint="Verify the OAuth trio and that the Google Chat API is enabled in the Google Cloud project." ;;
+            esac
+            echo "::error::Google Chat OAuth token refresh failed (HTTP ${http_code}${error:+, ${error}}). ${hint} The HTML report will not be attached to the chat message."
+            exit 0
+          fi
+
+          scope="$(printf '%s' "$body" | sed -n 's/.*"scope"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+          if [ -z "$scope" ]; then
+            echo "::notice::Google Chat OAuth token refresh succeeded. The response did not list scopes - confirm the consent screen grants https://www.googleapis.com/auth/chat.messages.create."
+          elif printf '%s' "$scope" | grep -q 'auth/chat\.messages\.create'; then
+            echo "::notice::Google Chat OAuth token refresh succeeded with the chat.messages.create scope - the HTML report can be attached."
+          else
+            echo "::error::Google Chat OAuth token refresh succeeded but the granted scope '${scope}' is missing https://www.googleapis.com/auth/chat.messages.create - the attachment upload will fail with HTTP 403. Re-consent with that scope."
+          fi
