@@ -194,6 +194,7 @@ The notifier always tries the OAuth path first and, on any failure, logs the err
 
 | Error | Cause | Fix |
 |---|---|---|
+| `400` / `No file found in request` | The upload reached Google with a valid token but carried no file content: the report was empty, or a Workspace policy blocked the `.html` type so the part was dropped. | Check the report is non-empty and that `.html` attachments are allowed in Chat. **Not** an OAuth problem - the token refreshes before the upload runs. |
 | `invalid_grant` | The refresh token is expired or revoked. Google expires refresh tokens **7 days** after creation while the OAuth app is in **Testing** mode. Also thrown when the token was minted by the OAuth 2.0 Playground (Google's client) but is used with your own `CLIENT_ID`/`CLIENT_SECRET`. | Publish the OAuth app, or re-authorize with **your own** client to get a fresh refresh token. |
 | `invalid_client` | The OAuth client ID or secret is rejected. | Re-check `GOOGLE_CHAT_OAUTH_CLIENT_ID` and `GOOGLE_CHAT_OAUTH_CLIENT_SECRET`. |
 | `403` / `permission_denied` | The consent screen is missing the `https://www.googleapis.com/auth/chat.messages.create` scope, or the authorizing user is no longer a member of the space. | Re-consent with that scope, or restore space membership. |
