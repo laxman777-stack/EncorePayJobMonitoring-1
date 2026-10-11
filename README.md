@@ -160,6 +160,7 @@ Add these under **Settings → Secrets and variables → Actions**. At least one
 | `GOOGLE_CHAT_OAUTH_CLIENT_ID` | OAuth client ID used to attach the HTML report to the message. Optional; without it the notification is text-only. |
 | `GOOGLE_CHAT_OAUTH_CLIENT_SECRET` | OAuth client secret for the same client. Required together with the two other `GOOGLE_CHAT_OAUTH_*` values. |
 | `GOOGLE_CHAT_OAUTH_REFRESH_TOKEN` | OAuth refresh token with the `https://www.googleapis.com/auth/chat.messages.create` scope. |
+| `REPORT_URL` | Optional. Public URL of the report. Added to the Google Chat message as `Full Report: <url>`, and a text-only fallback when the attachment cannot be sent. |
 | `REPORT_EMAIL_ENABLED` | `true` to send email. |
 | `REPORT_EMAIL_TO`, `REPORT_EMAIL_CC` | Recipients. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | SMTP settings. |
@@ -168,24 +169,40 @@ Add these under **Settings → Secrets and variables → Actions**. At least one
 
 ### Attaching the HTML report to the Google Chat message
 
-Incoming webhooks can post **text only** — they cannot carry file attachments. To have the HTML report attached to the chat message, the run uses the Google Chat API with a user OAuth token, so all three OAuth secrets must be set:
+Incoming webhooks can post **text only** — they cannot carry file attachments. That is a Google limitation, not a bug in this suite. To have the HTML report attached to the chat message, the run uses the Google Chat API with a **user** OAuth token (the media-upload endpoint rejects service-account/app authentication), so all three OAuth secrets must be set:
 
 1. In a Google Cloud project, enable the **Google Chat API**.
-2. Configure the OAuth consent screen, then create an **OAuth client** (Desktop or Web app) and note the client ID and secret.
-3. Authorize it with the scope `https://www.googleapis.com/auth/chat.messages.create` to obtain a **refresh token**.
+2. Configure the OAuth consent screen, add the scope `https://www.googleapis.com/auth/chat.messages.create`, then create an **OAuth client** (Desktop or Web app) and note the client ID and secret.
+3. Authorize that client **with the scope above** to obtain a **refresh token**. Generate it with your own client ID/secret — a token minted by the OAuth 2.0 Playground belongs to Google's client and is rejected by your client (see the troubleshooting table below).
 4. Make sure the **user who authorized the token is a member of the target space** — the API acts on that user's behalf — and that `GOOGLE_CHAT_WEBHOOK_URL` names that same space, otherwise the attachment upload or message creation fails with a permission or not-found error.
 5. Store `GOOGLE_CHAT_OAUTH_CLIENT_ID`, `GOOGLE_CHAT_OAUTH_CLIENT_SECRET` and `GOOGLE_CHAT_OAUTH_REFRESH_TOKEN` as repository secrets.
 
-While the OAuth app is in **Testing** mode, Google expires refresh tokens after 7 days — republish the app or re-authorize when notifications mysteriously stop attaching the report. If any of the three is missing, the run logs a warning and posts a text-only notification that still links to the run's report artifact.
+While the OAuth app is in **Testing** mode, Google expires refresh tokens after 7 days. Publish the app (**Internal** if it belongs to your own Workspace, otherwise Production) so tokens keep working, or re-authorize each week. If any of the three OAuth secrets is missing, the run logs a warning and posts a text-only notification that still links to the run's report artifact.
 
-**If the report still does not arrive,** the run emits a `Google Chat report attachment failed` annotation next to the failing step with the underlying error:
+### Troubleshooting Google Chat report delivery
 
-| Error in the annotation | Cause | Fix |
+**Symptom: the message arrives in Google Chat but the HTML report is not attached, or no message arrives at all.**
+
+The notifier always tries the OAuth path first and, on any failure, logs the error and silently falls back to a **text-only** webhook message. A missing attachment therefore always means the OAuth upload failed — the underlying error, not the notification, is what to act on.
+
+**Where to look**
+
+1. **Run page annotations.** The `Verify Google Chat OAuth` step (drop-in snippet in `docs/verify-google-chat-oauth-step.yml`; add it right after `Verify configuration`) checks the four Google Chat secrets and performs a real token refresh, emitting an `::error::`/`::warning::` annotation that names the exact cause.
+2. **Monitoring step log.** The line `[ERROR] Google Chat OAuth notification failed: ...` and the `Google Chat report attachment failed` annotation that the notifier emits alongside it, both carrying the underlying HTTP status.
+
+**Error → cause → fix**
+
+| Error | Cause | Fix |
 |---|---|---|
-| `invalid_grant` | Refresh token expired or revoked (7 days in Testing mode) | Re-authorize to get a fresh refresh token |
-| `invalid_client` | Wrong client ID or secret | Check `GOOGLE_CHAT_OAUTH_CLIENT_ID` / `GOOGLE_CHAT_OAUTH_CLIENT_SECRET` |
-| `403` | `chat.messages.create` scope not granted, or the authorizing user is no longer in the space | Re-consent with the scope, or restore space membership |
-| `404` | The webhook URL names a different space than the OAuth credentials can reach | Point `GOOGLE_CHAT_WEBHOOK_URL` at the same space |
+| `400` / `No file found in request` | The upload reached Google with a valid token but carried no file content: the report was empty, or a Workspace policy blocked the `.html` type so the part was dropped. | Check the report is non-empty and that `.html` attachments are allowed in Chat. **Not** an OAuth problem - the token refreshes before the upload runs. |
+| `invalid_grant` | The refresh token is expired or revoked. Google expires refresh tokens **7 days** after creation while the OAuth app is in **Testing** mode. Also thrown when the token was minted by the OAuth 2.0 Playground (Google's client) but is used with your own `CLIENT_ID`/`CLIENT_SECRET`. | Publish the OAuth app, or re-authorize with **your own** client to get a fresh refresh token. |
+| `invalid_client` | The OAuth client ID or secret is rejected. | Re-check `GOOGLE_CHAT_OAUTH_CLIENT_ID` and `GOOGLE_CHAT_OAUTH_CLIENT_SECRET`. |
+| `403` / `permission_denied` | The consent screen is missing the `https://www.googleapis.com/auth/chat.messages.create` scope, or the authorizing user is no longer a member of the space. | Re-consent with that scope, or restore space membership. |
+| `404` / `not found` | `GOOGLE_CHAT_WEBHOOK_URL` names a different space than the OAuth credentials can reach. | Point `GOOGLE_CHAT_WEBHOOK_URL` at the same space. |
+| `Unable to determine the Google Chat space` | `GOOGLE_CHAT_WEBHOOK_URL` is not the standard `/v1/spaces/<id>/messages` webhook URL. | Paste the full incoming-webhook URL from the space. |
+| `HTML report file was not found` | the report was not generated before the notification ran. | Check the earlier `[REPORT FAILED]` output and the `Check HTML report` step. |
+
+**Don't want to maintain an OAuth token?** Keep the webhook text-only and set a `REPORT_URL` secret — `GoogleChatNotifier.appendReportLinks` then adds a `Full Report: <url>` line to every message, so recipients can open the report without any attachment. Without it, the message links to the run's artifacts page instead.
 
 ### Local run with no config file
 

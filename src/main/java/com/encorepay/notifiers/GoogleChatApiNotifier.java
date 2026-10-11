@@ -57,6 +57,11 @@ final class GoogleChatApiNotifier {
                 if (!Files.isRegularFile(report)) {
                     throw new IllegalStateException("HTML report file was not found: " + htmlReportPath);
                 }
+                if (Files.size(report) == 0L) {
+                    throw new IllegalStateException("HTML report file is empty (0 bytes): " + htmlReportPath
+                            + ". Google Chat answers an upload that carries no file content with"
+                            + " HTTP 400 \"No file found in request\".");
+                }
                 attachment = uploadAttachment(accessToken, space, report);
             }
 
@@ -73,9 +78,9 @@ final class GoogleChatApiNotifier {
             System.err.println("[ERROR] Google Chat OAuth notification failed: "
                     + abbreviate(oauthException.getMessage(), 500)
                     + ". Falling back to the webhook notification (text only, no HTML report attached). "
-                    + describeOAuthFailure(oauthException));
+                    + describeFailure(oauthException));
             emitAnnotation("error", "Google Chat report attachment failed",
-                    abbreviate(oauthException.getMessage(), 300) + " " + describeOAuthFailure(oauthException)
+                    abbreviate(oauthException.getMessage(), 300) + " " + describeFailure(oauthException)
                     + " The notification was posted as text only, without the HTML report.");
             sendWebhook(webhook, message);
             System.out.println("[INFO] Google Chat webhook fallback notification sent (text only, no HTML report attached).");
@@ -96,8 +101,18 @@ final class GoogleChatApiNotifier {
                 .replace("\n", "%0A");
     }
 
-    private static String describeOAuthFailure(Throwable error) {
+    private static String describeFailure(Throwable error) {
         String message = String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
+        if (message.contains("no file found in request")) {
+            return "Google found no file content in the upload body. The HTML report was empty, or its"
+                + " part never reached the API. Google Chat also answers this way when a Workspace policy"
+                + " blocks the .html file type, because the blocked part is dropped before the upload is"
+                + " read. Check the report file size and the Chat file-type restrictions.";
+        }
+        if (message.contains("bad content type") || message.contains("invalid multipart")) {
+            return "The upload body was rejected as multipart/related. Check the boundary and the two"
+                + " parts (the metadata JSON first, then the file).";
+        }
         if (message.contains("invalid_grant")) {
             return "The refresh token is expired or revoked. Google expires refresh tokens 7 days after"
                 + " creation while the OAuth app is in Testing mode - re-authorize to obtain a fresh one.";
@@ -242,7 +257,9 @@ final class GoogleChatApiNotifier {
         write(out, "Content-Type: application/json; charset=UTF-8\r\n\r\n");
         write(out, metadata + "\r\n");
         write(out, "--" + boundary + "\r\n");
-        write(out, "Content-Type: text/html; charset=UTF-8\r\n\r\n");
+        write(out, "Content-Type: text/html; charset=UTF-8\r\n");
+        // Google's own uploader always sends this on a content part.
+        write(out, "Content-Transfer-Encoding: binary\r\n\r\n");
         out.write(fileBytes);
         write(out, "\r\n--" + boundary + "--\r\n");
         return out.toByteArray();
