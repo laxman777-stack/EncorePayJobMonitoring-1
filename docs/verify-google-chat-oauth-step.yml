@@ -11,6 +11,11 @@
 # same refresh-token exchange before the suite runs and turns the result into a
 # run-page annotation that names the cause and the fix.
 #
+# Also add this line to the job-level `env:` block (next to the other
+# GOOGLE_CHAT_* entries) so the documented text-only fallback link works:
+#
+#       REPORT_URL: ${{ secrets.REPORT_URL }}
+#
 # (Kept here instead of in .github/workflows/ only because the tooling used to
 # write this file is not permitted to update workflow files.)
 
